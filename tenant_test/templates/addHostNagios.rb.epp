@@ -1,0 +1,82 @@
+require 'net/http'
+require 'socket'
+require 'openssl'
+require 'json'
+
+def APIPost(url, body, proxy_addr, proxy_port)
+    func_uri = URI.parse(url)
+    func_http = Net::HTTP.new(func_uri.host, func_uri.port, proxy_addr, proxy_port)
+    if func_uri.port == 443
+        func_http.use_ssl = true
+        func_http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+    end
+    func_request = Net::HTTP::Post.new("#{func_uri.path}?#{func_uri.query}")
+    func_request.body = body
+    func_response = func_http.request(func_request)
+    func_json = JSON.parse(func_response.body)
+    return func_json
+end
+
+def APIGet(url, proxy_addr, proxy_port)
+    func_uri = URI.parse(url)
+    func_http = Net::HTTP.new(func_uri.host, func_uri.port, proxy_addr, proxy_port)
+    if func_uri.port == 443
+        func_http.use_ssl = true
+        func_http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+    end
+    func_request = Net::HTTP::Get("#{func_uri.path}?#{func_uri.query}")
+    func_response = func_http.request(func_request)
+    func_json = JSON.parse(func_response.body)
+    return func_json
+end
+
+
+hostname = Socket.gethostbyname(Socket.gethostname).first
+hostname = hostname.downcase
+
+monitoring_host = "<%= $checkmkhost %>"
+monitoring_environment = "<%= $checkmkenv %>"
+username = "<%= $checkmkuser %>"
+secret = "<%= $checkmksecret %>"
+proxy_addr = "<%= $checkmkproxyaddr %>"
+proxy_port = "<%= $checkmkproxyport %>"
+if proxy_addr == ''
+    proxy_addr = nil
+    proxy_port = nil
+end
+
+# Calculate folder
+folder = "unmanaged"
+
+# Get IP address for route to check_mk host
+monitoring_short = URI.parse(monitoring_host)
+ipcmd =  "powershell -Command \" & { Find-NetRoute -RemoteIPAddress (Resolve-DnsName " + monitoring_short.host + ").ip4address | Format-Wide -Property IPAddress}\""
+ipaddress = `#{ipcmd}`
+ipaddress = ipaddr.scan /\d+\.\d+\.\d+\.\d+/
+
+# URL definitions
+url_base = monitoring_host + "/" + monitoring_environment + "/check_mk/webapi.py"
+url_gethost = url_base + "?_username=" + username + "&_secret=" + secret + "&action=get_host"
+url_addhost = url_base + "?_username=" + username + "&_secret=" + secret + "&action=add_host"
+url_activate = url_base + "?_username=" + username + "&_secret=" + secret + "&action=activate_changes"
+url_discover = url_base + "?_username=" + username + "&_secret=" + secret + "&action=discover_services"
+
+# POST body definitions
+body_addhost = 'request={"attributes":{"ipaddress":"' + ipaddress + '","alias":"' + hostname + '"}, "folder": "'+ folder + '", "hostname":"' + hostname + '"}'
+body_discover = 'request={"hostname": "' + hostname + '"}'
+body_gethost = 'request={"hostname":"' + hostname + '"}'
+
+# Main logic
+
+main_call = APIPost(url_gethost, body_gethost, proxy_addr, proxy_port)
+if main_call['result_code'] == 1
+    puts "Adding host to Nagios"
+    APIPost(url_addhost, body_addhost, proxy_addr, proxy_port)
+    APIGet(url_activate, proxy_addr, proxy_port)
+    APIPost(url_discover, url_discover, proxy_addr, proxy_port)
+    APIGet(url_activate, proxy_addr, proxy_port)
+elsif main_call['result_code'] == 0
+    puts "Host already in nagios"
+else
+    puts "Something went wrong"
+end
